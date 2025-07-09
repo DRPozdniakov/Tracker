@@ -17,18 +17,19 @@ class BotUser:
         self.last_clock_in = None
         self.awaiting_location = False
         self.pending_action = None  # 'clock_in' or 'clock_out'
+        self.config_step = None  # For config command flow
+        self.temp_config = {}  # Temporary storage for config being set
 
     def get_main_keyboard(self):
         """Generate main keyboard with Clock In/Clock Out buttons"""
         if self.is_clocked_in:
             keyboard = [
-                [InlineKeyboardButton("🔴 Clock Out", callback_data="clock_out")],
-                [InlineKeyboardButton("📊 View Records", callback_data="view_records")]
+                [InlineKeyboardButton("🔴 Clock Out", callback_data="clock_out")]
             ]
         else:
             keyboard = [
                 [InlineKeyboardButton("🟢 Clock In", callback_data="clock_in")],
-                [InlineKeyboardButton("📊 View Records", callback_data="view_records")]
+                [InlineKeyboardButton("⚙️ Config", callback_data="config")]
             ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -50,6 +51,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("start", self.start))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("status", self.status_command))
+        self.application.add_handler(CommandHandler("config", self.config_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         self.application.add_handler(MessageHandler(filters.LOCATION, self.location_handler))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_handler))
@@ -72,12 +74,24 @@ class TelegramBot:
             if action == "clock_in":
                 self.registered_users[user_id].last_clock_in = timestamp
         
+        # Get user configuration and display project details
+        user_config = self.time_tracker.get_user_config(user_id)
+        
+        if user_config:
+            project_info = (
+                f"📋 **Project**: {user_config.get('project_name', 'Not set')}\n"
+                f"🏭 **Location**: {user_config.get('project_location', 'Not set')}\n"
+                f"👷 **Contractor**: {user_config.get('contractor_name', 'Not set')}\n"
+                f"🍽️ **Lunch Break**: {user_config.get('lunch_duration', 'Not set')}\n\n"
+            )
+        else:
+            project_info = "⚠️ **No project configuration found**\nPlease set up your project details first.\n\n"
+        
         welcome_message = (
-            f"🕐 *Welcome to Time Tracker {self.version}!* 🕐\n\n"
+            f"🕐 **Time Tracker {self.version}**\n\n"
             f"Hello {user.first_name}! 👋\n\n"
-            "This bot helps you track your work hours with location verification.\n\n"
-            "📍 **Important**: You'll need to share your location when clocking in/out.\n\n"
-            "Use the buttons below to get started:"
+            f"{project_info}"
+            "Choose an option below:"
         )
         
         reply_markup = self.registered_users[user_id].get_main_keyboard()
@@ -90,11 +104,13 @@ class TelegramBot:
             "**Commands:**\n"
             "/start - Start the bot and see main menu\n"
             "/help - Show this help message\n"
-            "/status - Check your current clock status\n\n"
+            "/status - Check your current clock status\n"
+            "/config - Configure project details\n\n"
             "**How to use:**\n"
             "🟢 Clock In - Start your work session\n"
             "🔴 Clock Out - End your work session\n"
-            "📊 View Records - See your recent time records\n\n"
+            "📊 View Records - See your recent time records\n"
+            "⚙️ Config - Set project name, location, and contractor\n\n"
             "**Note:** You must share your location when clocking in/out for verification."
         )
         await update.message.reply_html(help_message)
@@ -128,11 +144,40 @@ class TelegramBot:
         
         await update.message.reply_html(status_message)
     
-    def _calculate_duration(self, start_time):
-        """Calculate duration from start time to now"""
-        if isinstance(start_time, str):
-            start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+    async def config_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /config command"""
+        user_id = update.effective_user.id
         
+        if user_id not in self.registered_users:
+            self.registered_users[user_id] = BotUser(update)
+        
+        user = self.registered_users[user_id]
+        
+        # Get current config
+        current_config = self.time_tracker.get_user_config(user_id)
+        
+        config_message = "⚙️ **Project Configuration**\n\n"
+        
+        if current_config:
+            config_message += "**Current Settings:**\n"
+            config_message += f"📋 Project Name: {current_config.get('project_name', 'Not set')}\n"
+            config_message += f"🏭 Project Location: {current_config.get('project_location', 'Not set')}\n"
+            config_message += f"👷 Contractor Name: {current_config.get('contractor_name', 'Not set')}\n"
+            config_message += f"🍽️ Lunch Break: {current_config.get('lunch_duration', 'Not set')}\n\n"
+        else:
+            config_message += "**No configuration found**\n\n"
+        
+        config_message += "To update your configuration, please provide the following details:\n\n"
+        config_message += "1️⃣ Project Name\n2️⃣ Project Location (Factory)\n3️⃣ Contractor Name\n4️⃣ Lunch Break Duration (e.g., 30 minutes)\n\n"
+        config_message += "Please send the **Project Name** first:"
+        
+        user.config_step = "project_name"
+        user.temp_config = {}
+        
+        await update.message.reply_html(config_message)
+    
+    def _calculate_duration(self, start_time):
+        """Calculate duration from start time to now"""        
         duration = datetime.now() - start_time
         hours = duration.seconds // 3600
         minutes = (duration.seconds % 3600) // 60
@@ -154,7 +199,7 @@ class TelegramBot:
         if action == "clock_in":
             if user.is_clocked_in:
                 await query.edit_message_text(
-                    "⚠️ You are already clocked in!\n\nPlease clock out first before clocking in again.",
+                    "⚠️ You are already clocked in!",
                     reply_markup=user.get_main_keyboard()
                 )
             else:
@@ -162,26 +207,22 @@ class TelegramBot:
                 user.pending_action = "clock_in"
                 
                 location_keyboard = ReplyKeyboardMarkup(
-                    [[KeyboardButton("📍 Share Location", request_location=True)]],
+                    [[KeyboardButton("📍 Clock In with Location", request_location=True)]],
                     resize_keyboard=True,
                     one_time_keyboard=True
                 )
                 
-                await query.edit_message_text(
-                    "🟢 **Clock In Process**\n\n"
-                    "Please share your location to complete the clock in process.\n\n"
-                    "Tap the button below to share your location:"
-                )
+                await query.edit_message_text("🟢 **Clock In**\n\nTap the button below:")
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="📍 Please share your location:",
+                    text="📍 Clock In with Location",
                     reply_markup=location_keyboard
                 )
         
         elif action == "clock_out":
             if not user.is_clocked_in:
                 await query.edit_message_text(
-                    "⚠️ You are not clocked in!\n\nPlease clock in first before clocking out.",
+                    "⚠️ You are not clocked in!",
                     reply_markup=user.get_main_keyboard()
                 )
             else:
@@ -189,39 +230,40 @@ class TelegramBot:
                 user.pending_action = "clock_out"
                 
                 location_keyboard = ReplyKeyboardMarkup(
-                    [[KeyboardButton("📍 Share Location", request_location=True)]],
+                    [[KeyboardButton("📍 Clock Out with Location", request_location=True)]],
                     resize_keyboard=True,
                     one_time_keyboard=True
                 )
                 
-                await query.edit_message_text(
-                    "🔴 **Clock Out Process**\n\n"
-                    "Please share your location to complete the clock out process.\n\n"
-                    "Tap the button below to share your location:"
-                )
+                await query.edit_message_text("🔴 **Clock Out**\n\nTap the button below:")
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="📍 Please share your location:",
+                    text="📍 Clock Out with Location",
                     reply_markup=location_keyboard
                 )
         
-        elif action == "view_records":
-            records = self.time_tracker.get_user_records(user_id)
-            if records:
-                records_text = "📊 **Your Recent Records:**\n\n"
-                for record in records:
-                    action_emoji = "🟢" if record[0] == "clock_in" else "🔴"
-                    records_text += f"{action_emoji} {record[0].title()}: {record[1]}\n"
-                    if record[2] and record[3]:
-                        records_text += f"📍 Location: {record[2]:.4f}, {record[3]:.4f}\n"
-                    records_text += "\n"
-            else:
-                records_text = "📊 **No Records Found**\n\nStart tracking your time by clocking in!"
+        elif action == "config":
+            # Handle config button click
+            current_config = self.time_tracker.get_user_config(user_id)
             
-            await query.edit_message_text(
-                records_text,
-                reply_markup=user.get_main_keyboard()
-            )
+            config_message = "⚙️ **Project Configuration**\n\n"
+            
+            if current_config:
+                config_message += "**Current Settings:**\n"
+                config_message += f"📋 Project Name: {current_config.get('project_name', 'Not set')}\n"
+                config_message += f"🏭 Project Location: {current_config.get('project_location', 'Not set')}\n"
+                config_message += f"👷 Contractor Name: {current_config.get('contractor_name', 'Not set')}\n\n"
+            else:
+                config_message += "**No configuration found**\n\n"
+            
+            config_message += "To update your configuration, please provide the following details:\n\n"
+            config_message += "1️⃣ Project Name\n2️⃣ Project Location (Factory)\n3️⃣ Contractor Name\n\n"
+            config_message += "Please send the **Project Name** first:"
+            
+            user.config_step = "project_name"
+            user.temp_config = {}
+            
+            await query.edit_message_text(config_message)
     
     async def location_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle location messages"""
@@ -253,11 +295,20 @@ class TelegramBot:
             user.is_clocked_in = True
             user.last_clock_in = datetime.now()
             
+            # Get user configuration for display
+            user_config = self.time_tracker.get_user_config(user_id)
+            config_info = ""
+            if user_config:
+                config_info = (
+                    f"📋 Project: {user_config.get('project_name', 'Not set')}\n"
+                    f"🏭 Location: {user_config.get('project_location', 'Not set')}\n"
+                    f"👷 Contractor: {user_config.get('contractor_name', 'Not set')}\n"
+                )
+            
             success_message = (
-                "🟢 **Successfully Clocked In!**\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Location: {latitude:.4f}, {longitude:.4f}\n\n"
-                "Have a productive day! 💪"
+                f"{config_info}\n"
+                f"🟢 **Clocked In! Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                
             )
             
         elif user.pending_action == "clock_out":
@@ -274,22 +325,41 @@ class TelegramBot:
             if user.last_clock_in:
                 duration = f"\nWork Duration: {self._calculate_duration(user.last_clock_in)}"
             
+            # Get user configuration for display
+            user_config = self.time_tracker.get_user_config(user_id)
+            config_info = ""
+            if user_config:
+                config_info = (
+                    f"📋 Project: {user_config.get('project_name', 'Not set')}\n"
+                    f"🏭 Location: {user_config.get('project_location', 'Not set')}\n"
+                    f"👷 Contractor: {user_config.get('contractor_name', 'Not set')}\n"
+                )
+            
             user.is_clocked_in = False
             user.last_clock_in = None
             
             success_message = (
-                "🔴 **Successfully Clocked Out!**\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Location: {latitude:.4f}, {longitude:.4f}{duration}\n\n"
-                "Great work today! 🎉"
+                f"{config_info}\n"
+                f"🔴 **Clocked Out! Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                f"Work Duration: {self._calculate_duration(user.last_clock_in)}\n"
+                
             )
         
         # Reset location awaiting state
         user.awaiting_location = False
         user.pending_action = None
         
+        # Hide the location keyboard
+        from telegram import ReplyKeyboardRemove
         await update.message.reply_html(
             success_message,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # Send new message with main keyboard
+        await context.bot.send_message(
+            chat_id=update.message.chat_id,
+            text="Choose an option:",
             reply_markup=user.get_main_keyboard()
         )
     
@@ -302,6 +372,61 @@ class TelegramBot:
             return
         
         user = self.registered_users[user_id]
+        
+        # Handle config step-by-step process
+        if user.config_step:
+            text = update.message.text.strip()
+            
+            if user.config_step == "project_name":
+                user.temp_config["project_name"] = text
+                user.config_step = "project_location"
+                await update.message.reply_html(
+                    f"✅ Project Name set to: **{text}**\n\n"
+                    "Now please send the **Project Location** (Factory name/location):"
+                )
+            
+            elif user.config_step == "project_location":
+                user.temp_config["project_location"] = text
+                user.config_step = "contractor_name"
+                await update.message.reply_html(
+                    f"✅ Project Location set to: **{text}**\n\n"
+                    "Finally, please send the **Contractor Name**:"
+                )
+            
+            elif user.config_step == "contractor_name":
+                user.temp_config["contractor_name"] = text
+                user.config_step = "lunch_duration"
+                await update.message.reply_html(
+                    f"✅ Contractor Name set to: **{text}**\n\n"
+                    "Finally, please send the **Lunch Break Duration** (e.g., 30 minutes, 1 hour, or 0 for no lunch break):"
+                )
+            
+            elif user.config_step == "lunch_duration":
+                user.temp_config["lunch_duration"] = text
+                
+                # Save configuration
+                self.time_tracker.save_user_config(user_id, user.temp_config)
+                
+                config_summary = (
+                    "✅ **Configuration Saved Successfully!**\n\n"
+                    "**Your Settings:**\n"
+                    f"📋 Project Name: {user.temp_config['project_name']}\n"
+                    f"🏭 Project Location: {user.temp_config['project_location']}\n"
+                    f"👷 Contractor Name: {user.temp_config['contractor_name']}\n"
+                    f"🍽️ Lunch Break: {user.temp_config['lunch_duration']}\n\n"
+                    "These settings will be used in your time tracking reports."
+                )
+                
+                # Reset config state
+                user.config_step = None
+                user.temp_config = {}
+                
+                await update.message.reply_html(
+                    config_summary,
+                    reply_markup=user.get_main_keyboard()
+                )
+            
+            return
         
         if user.awaiting_location:
             await update.message.reply_text(
@@ -318,9 +443,18 @@ class TelegramBot:
         self.logger.error(f"An error occurred: {context.error}")
         
         if update and isinstance(update, Update):
-            await update.message.reply_text(
-                "An unexpected error occurred. Please try again or contact support."
-            )
+            try:
+                if update.message:
+                    await update.message.reply_text(
+                        "An unexpected error occurred. Please try again or contact support."
+                    )
+                elif update.callback_query:
+                    await update.callback_query.answer()
+                    await update.callback_query.edit_message_text(
+                        "An unexpected error occurred. Please try again or contact support."
+                    )
+            except Exception as e:
+                self.logger.error(f"Error in error handler: {e}")
     
     def run(self) -> None:
         """Start the bot"""
