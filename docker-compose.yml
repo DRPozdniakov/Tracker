@@ -1,0 +1,29 @@
+services:
+  telegram-tracker:
+    build: .
+    container_name: telegram-time-tracker
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - GSHEET_KEY_PATH=/app/keys/google_creds.json
+    volumes:
+      # Mount your Google credentials file
+      - ./keys:/app/keys:ro
+      # Optional: Mount logs directory
+      - ./logs:/app/logs
+    # Optional: Add resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    # Optional: Add health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('https://api.telegram.org')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

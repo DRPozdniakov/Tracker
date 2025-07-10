@@ -8,8 +8,15 @@ class GsheetsHandler:
     def __init__(self, gsheet_key_path: str, sheet_name: str = 'Launch_Time_Tracker'):
         self.gc = pygsheets.authorize(service_file=gsheet_key_path)
         self.sh = self.gc.open(sheet_name)
-        self.setup_timesheet()
+        
+        # User configuration mapping
+        self.users_config = {
+            1794622246: "Shane_Hill",
+            495992751: "Dmitry_Pozdniakov"
+        }
+        
         self.setup_config_sheet()
+        self.setup_user_timesheets()
 
     def read_categories(self):
         wks = self.sh[0]
@@ -18,19 +25,44 @@ class GsheetsHandler:
         categories_dict = {category: category_link for category, category_link in zip(categories, categories_links)}
         return categories_dict
     
-    def setup_timesheet(self):
-        """Setup Timesheet for clock in/out data"""
+    def setup_user_timesheets(self):
+        """Setup individual timesheets for each user"""
+        for user_id, username in self.users_config.items():
+            sheet_name = f"Timesheet_{username}"
+            try:
+                # Try to get existing user timesheet
+                timesheet_wks = self.sh.worksheet_by_title(sheet_name)
+            except pygsheets.exceptions.WorksheetNotFound:
+                # Create new user timesheet
+                timesheet_wks = self.sh.add_worksheet(sheet_name)
+            
+            # Setup headers for user timesheet
+            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out"]
+            first_row = timesheet_wks.get_row(1)
+            if not first_row or first_row[0] != "Date":
+                timesheet_wks.update_row(1, headers)
+    
+    def get_user_sheet_name(self, user_id):
+        """Get the sheet name for a specific user"""
+        if user_id in self.users_config:
+            return f"Timesheet_{self.users_config[user_id]}"
+        else:
+            # Default sheet for unknown users
+            self._setup_unknown_user_sheet()
+            return "Timesheet_Unknown"
+    
+    def _setup_unknown_user_sheet(self):
+        """Setup default sheet for unknown users"""
+        sheet_name = "Timesheet_Unknown"
         try:
-            # Try to get existing Timesheet
-            timesheet_wks = self.sh.worksheet_by_title("Timesheet")
+            # Try to get existing unknown user timesheet
+            timesheet_wks = self.sh.worksheet_by_title(sheet_name)
         except pygsheets.exceptions.WorksheetNotFound:
-            # Create new Timesheet
-            timesheet_wks = self.sh.add_worksheet("Timesheet")
-        
-        # Setup headers for Timesheet
-        headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out"]
-        first_row = timesheet_wks.get_row(1)
-        if not first_row or first_row[0] != "Date":
+            # Create new unknown user timesheet
+            timesheet_wks = self.sh.add_worksheet(sheet_name)
+            
+            # Setup headers
+            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out"]
             timesheet_wks.update_row(1, headers)
     
     
@@ -44,23 +76,21 @@ class GsheetsHandler:
             config_wks = self.sh.add_worksheet("User_Config")
         
         # Setup headers for config sheet
-        config_headers = ["User ID", "Project Name", "Project Location", "Contractor Name", "Lunch Duration", "Last Updated"]
+        config_headers = ["User ID", "Username", "Project Name", "Project Location", "Contractor Name", "Lunch Duration", "Last Updated"]
         first_row = config_wks.get_row(1)
         if not first_row or first_row[0] != "User ID":
             config_wks.update_row(1, config_headers)
 
     def add_time_record(self, user_id, username, action, timestamp, latitude=None, longitude=None):
-        """Add or update a daily time record in the Timesheet"""
-        timesheet_wks = self.sh.worksheet_by_title("Timesheet")
+        """Add or update a daily time record in the user's Timesheet"""
+        sheet_name = self.get_user_sheet_name(user_id)
+        timesheet_wks = self.sh.worksheet_by_title(sheet_name)
         
-        # Format timestamp and extract date
-        if isinstance(timestamp, str):
-            timestamp_obj = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        else:
-            timestamp_obj = timestamp
+        # Use local time directly
+        local_time = datetime.now()
         
-        date_str = timestamp_obj.strftime('%d/%m/%Y')
-        time_str = timestamp_obj.strftime('%H:%M:%S')
+        date_str = local_time.strftime('%d/%m/%Y')
+        time_str = local_time.strftime('%H:%M:%S')
         
         # Get all records to find existing entry for today
         all_records = timesheet_wks.get_all_records()
@@ -127,23 +157,29 @@ class GsheetsHandler:
 
     def get_user_records(self, user_id, limit=10):
         """Get recent time records for a user"""
-        timesheet_wks = self.sh.worksheet_by_title("Timesheet")
-        all_records = timesheet_wks.get_all_records()
+        sheet_name = self.get_user_sheet_name(user_id)
+        try:
+            timesheet_wks = self.sh.worksheet_by_title(sheet_name)
+            all_records = timesheet_wks.get_all_records()
+        except pygsheets.exceptions.WorksheetNotFound:
+            return []
         
-        # Filter records for the user and sort by timestamp (newest first)
-        user_records = [record for record in all_records if str(record.get('User ID')) == str(user_id)]
-        user_records.sort(key=lambda x: x.get('Timestamp', ''), reverse=True)
+        # Sort records by date (newest first)
+        all_records.sort(key=lambda x: x.get('Date', ''), reverse=True)
         
         # Return limited records
-        limited_records = user_records[:limit]
+        limited_records = all_records[:limit]
         formatted_records = []
         
         for record in limited_records:
             formatted_record = (
-                record.get('Action', ''),
-                record.get('Timestamp', ''),
-                record.get('Latitude', ''),
-                record.get('Longitude', '')
+                record.get('Date', ''),
+                record.get('clock_in', ''),
+                record.get('clock_out', ''),
+                record.get('Latitude In', ''),
+                record.get('Longitude In', ''),
+                record.get('Latitude Out', ''),
+                record.get('Longitude Out', '')
             )
             formatted_records.append(formatted_record)
         
@@ -151,23 +187,24 @@ class GsheetsHandler:
 
     def get_last_action(self, user_id):
         """Get the last action for a user"""
-        timesheet_wks = self.sh.worksheet_by_title("Timesheet")
-        all_records = timesheet_wks.get_all_records()
+        sheet_name = self.get_user_sheet_name(user_id)
+        try:
+            timesheet_wks = self.sh.worksheet_by_title(sheet_name)
+            all_records = timesheet_wks.get_all_records()
+        except pygsheets.exceptions.WorksheetNotFound:
+            return None
         
-        # Filter records for the user and sort by date (newest first)
-        user_records = [record for record in all_records if str(record.get('User ID')) == str(user_id)]
-        
-        if not user_records:
+        if not all_records:
             return None
         
         # Sort by date and get the latest
-        user_records.sort(key=lambda x: x.get('Date', ''), reverse=True)
-        latest_record = user_records[0]
+        all_records.sort(key=lambda x: x.get('Date', ''), reverse=True)
+        latest_record = all_records[0]
         
         # Check if there's a clock out time - if yes, last action was clock_out
         # If no clock out time but clock in time exists, last action was clock_in
-        clock_in = latest_record.get('Clock In', '')
-        clock_out = latest_record.get('Clock Out', '')
+        clock_in = latest_record.get('clock_in', '')
+        clock_out = latest_record.get('clock_out', '')
         
         if clock_out:
             return ("clock_out", clock_out)
@@ -177,17 +214,22 @@ class GsheetsHandler:
             return None
 
     def get_today_records(self, user_id=None):
-        """Get today's records for a user or all users"""
-        timesheet_wks = self.sh.worksheet_by_title("Timesheet")
-        all_records = timesheet_wks.get_all_records()
+        """Get today's records for a user"""
+        if user_id:
+            sheet_name = self.get_user_sheet_name(user_id)
+            try:
+                timesheet_wks = self.sh.worksheet_by_title(sheet_name)
+                all_records = timesheet_wks.get_all_records()
+            except pygsheets.exceptions.WorksheetNotFound:
+                return []
+        else:
+            # If no user_id provided, return empty list since we now have separate sheets
+            return []
         
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = datetime.now().strftime('%d/%m/%Y')
         
         # Filter records for today
         today_records = [record for record in all_records if record.get('Date') == today_str]
-        
-        if user_id:
-            today_records = [record for record in today_records if str(record.get('User ID')) == str(user_id)]
         
         return today_records
 
@@ -206,6 +248,7 @@ class GsheetsHandler:
         # Prepare config data
         config_data = [
             str(user_id),
+            config.get('username', ''),  # Telegram username
             config.get('project_name', ''),
             config.get('project_location', ''),
             config.get('contractor_name', ''),
@@ -231,6 +274,7 @@ class GsheetsHandler:
             for record in all_records:
                 if str(record.get('User ID')) == str(user_id):
                     return {
+                        'username': record.get('Username', ''),
                         'project_name': record.get('Project Name', ''),
                         'project_location': record.get('Project Location', ''),
                         'contractor_name': record.get('Contractor Name', ''),

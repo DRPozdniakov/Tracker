@@ -42,7 +42,7 @@ class TelegramBot:
         self.application = Application.builder().token(token).build()
         self.registered_users = {}
         self.time_tracker = TimeTracker(gsheet_key_path)
-        self.version = "v1.0"
+        self.version = "v1.1"
         
         self._setup_handlers()
     
@@ -320,7 +320,7 @@ class TelegramBot:
                 longitude=longitude
             )
             
-            # Calculate work duration
+            # Calculate work duration before clearing last_clock_in
             duration = ""
             if user.last_clock_in:
                 duration = f"\nWork Duration: {self._calculate_duration(user.last_clock_in)}"
@@ -335,15 +335,16 @@ class TelegramBot:
                     f"👷 Contractor: {user_config.get('contractor_name', 'Not set')}\n"
                 )
             
+            success_message = (
+                "🔴 **Successfully Clocked Out!**\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Location: {latitude:.4f}, {longitude:.4f}{duration}\n\n"
+                f"{config_info}"
+                "Great work today! 🎉"
+            )
+            
             user.is_clocked_in = False
             user.last_clock_in = None
-            
-            success_message = (
-                f"{config_info}\n"
-                f"🔴 **Clocked Out! Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-                f"Work Duration: {self._calculate_duration(user.last_clock_in)}\n"
-                
-            )
         
         # Reset location awaiting state
         user.awaiting_location = False
@@ -403,6 +404,7 @@ class TelegramBot:
             
             elif user.config_step == "lunch_duration":
                 user.temp_config["lunch_duration"] = text
+                user.temp_config["username"] = user.username  # Add Telegram username
                 
                 # Save configuration
                 self.time_tracker.save_user_config(user_id, user.temp_config)

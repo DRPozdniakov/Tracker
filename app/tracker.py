@@ -2,6 +2,11 @@ import os
 import logging
 from class_telegram_bot import TelegramBot
 
+users_config={
+    1794622246:"Shane_Hill"	,
+    495992751:"Dmitry_Pozdniakov"	
+}
+
 
 def main():
     """Main entry point for the time tracker bot"""
