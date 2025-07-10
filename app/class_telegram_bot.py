@@ -42,7 +42,7 @@ class TelegramBot:
         self.application = Application.builder().token(token).build()
         self.registered_users = {}
         self.time_tracker = TimeTracker(gsheet_key_path)
-        self.version = "v1.1"
+        self.version = "v1.108"
         
         self._setup_handlers()
     
@@ -129,10 +129,24 @@ class TelegramBot:
             is_clocked_in = (action == "clock_in")
             
             if is_clocked_in:
+                # Parse the time string and create a datetime for today
+                try:
+                    from datetime import datetime, time
+                    time_parts = timestamp.split(':')
+                    if len(time_parts) == 3:
+                        hour, minute, second = map(int, time_parts)
+                        today = datetime.now().date()
+                        start_datetime = datetime.combine(today, time(hour, minute, second))
+                        duration_str = self._calculate_duration(start_datetime)
+                    else:
+                        duration_str = "Unknown"
+                except:
+                    duration_str = "Unknown"
+                    
                 status_message = (
                     f"🟢 **Status: CLOCKED IN**\n\n"
                     f"Started: {timestamp}\n"
-                    f"Duration: {self._calculate_duration(timestamp)}"
+                    f"Duration: {duration_str}"
                 )
             else:
                 status_message = (
@@ -177,10 +191,25 @@ class TelegramBot:
         await update.message.reply_html(config_message)
     
     def _calculate_duration(self, start_time):
-        """Calculate duration from start time to now"""        
+        """Calculate duration from start time to now"""
+        if start_time is None:
+            return "0h 0m"
+            
+        if isinstance(start_time, str):
+            try:
+                start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            except:
+                return "0h 0m"
+        
         duration = datetime.now() - start_time
-        hours = duration.seconds // 3600
-        minutes = (duration.seconds % 3600) // 60
+        
+        # Handle negative duration (clock skew or date issues)
+        if duration.total_seconds() < 0:
+            return "0h 0m"
+        
+        total_seconds = int(duration.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
         return f"{hours}h {minutes}m"
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -336,11 +365,11 @@ class TelegramBot:
                 )
             
             success_message = (
-                "🔴 **Successfully Clocked Out!**\n\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Location: {latitude:.4f}, {longitude:.4f}{duration}\n\n"
-                f"{config_info}"
-                "Great work today! 🎉"
+                f"{config_info}\n"
+                f"🔴 **Clocked Out.\n" 
+                f"Date: {user.last_clock_in.strftime('%Y-%m-%d')}\n"
+                f"Working Time: {user.last_clock_in.strftime('%H:%M')} - {datetime.now().strftime('%H:%M')}\n"
+                f"Work Duration: {self._calculate_duration(user.last_clock_in)}\n"
             )
             
             user.is_clocked_in = False
