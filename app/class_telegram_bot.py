@@ -1,5 +1,6 @@
 import os
 import logging
+import pytz
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
@@ -54,6 +55,7 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("config", self.config_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
         self.application.add_handler(MessageHandler(filters.LOCATION, self.location_handler))
+        self.application.add_handler(MessageHandler(filters.VOICE, self.voice_handler))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.text_handler))
         self.application.add_error_handler(self.error_handler)
     
@@ -201,7 +203,8 @@ class TelegramBot:
             except:
                 return "0h 0m"
         
-        duration = datetime.now() - start_time
+        german_tz = pytz.timezone('Europe/Berlin')
+        duration = datetime.now(german_tz) - start_time
         
         # Handle negative duration (clock skew or date issues)
         if duration.total_seconds() < 0:
@@ -392,6 +395,88 @@ class TelegramBot:
             text="Choose an option:",
             reply_markup=user.get_main_keyboard()
         )
+    
+    async def voice_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle voice messages and transcribe them"""
+        user_id = update.effective_user.id
+        
+        if user_id not in self.registered_users:
+            await update.message.reply_text("Please start with /start first.")
+            return
+        
+        try:
+            # Download the voice file
+            voice_file = await update.message.voice.get_file()
+            voice_data = await voice_file.download_as_bytearray()
+            
+            # Transcribe using OpenAI Whisper
+            transcription = await self._transcribe_audio(voice_data)
+            
+            if transcription:
+                # Save transcription as description for today
+                success = self.time_tracker.update_description(user_id, transcription)
+                
+                if success:
+                    user = self.registered_users[user_id]
+                    await update.message.reply_html(
+                        f"✅ **Sprachnotiz zur heutigen Arbeitszeit hinzugefügt:**\n\n"
+                        f"📝 \"{transcription}\"",
+                        reply_markup=user.get_main_keyboard()
+                    )
+                else:
+                    user = self.registered_users[user_id]
+                    await update.message.reply_html(
+                        "⚠️ Keine Arbeitszeit für heute gefunden. Bitte zuerst einstempeln.",
+                        reply_markup=user.get_main_keyboard()
+                    )
+            else:
+                user = self.registered_users[user_id]
+                await update.message.reply_html(
+                    "❌ Audio konnte nicht transkribiert werden. Bitte versuchen Sie es erneut.",
+                    reply_markup=user.get_main_keyboard()
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Error processing voice message: {e}")
+            user = self.registered_users[user_id]
+            await update.message.reply_html(
+                "❌ Fehler beim Verarbeiten der Sprachnachricht. Bitte versuchen Sie es erneut.",
+                reply_markup=user.get_main_keyboard()
+            )
+    
+    async def _transcribe_audio(self, audio_data):
+        """Transcribe audio using OpenAI Whisper"""
+        try:
+            import openai
+            import os
+            import tempfile
+            
+            # Set OpenAI API key
+            openai.api_key = os.getenv("OPENAI_API_KEY")
+            
+            # Save audio data to temporary file
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_file:
+                temp_file.write(audio_data)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Transcribe using OpenAI Whisper
+                with open(temp_file_path, "rb") as audio_file:
+                    client = openai.OpenAI()
+                    response = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="de"  # German language
+                    )
+                return response.text
+                
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+                
+        except Exception as e:
+            self.logger.error(f"Transcription error: {e}")
+            return None
     
     async def text_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle text messages"""

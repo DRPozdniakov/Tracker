@@ -37,7 +37,7 @@ class GsheetsHandler:
                 timesheet_wks = self.sh.add_worksheet(sheet_name)
             
             # Setup headers for user timesheet
-            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out"]
+            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out", "Description"]
             first_row = timesheet_wks.get_row(1)
             if not first_row or first_row[0] != "Date":
                 timesheet_wks.update_row(1, headers)
@@ -62,8 +62,30 @@ class GsheetsHandler:
             timesheet_wks = self.sh.add_worksheet(sheet_name)
             
             # Setup headers
-            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out"]
+            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out", "Description"]
             timesheet_wks.update_row(1, headers)
+    
+    def _get_local_time(self, latitude=None, longitude=None):
+        """Get local time based on coordinates or default to Europe/Berlin"""
+        try:
+            if latitude is not None and longitude is not None:
+                # Use timezonefinder to get timezone from coordinates
+                from timezonefinder import TimezoneFinder
+                import pytz
+                
+                tf = TimezoneFinder()
+                timezone_str = tf.timezone_at(lat=float(latitude), lng=float(longitude))
+                
+                if timezone_str:
+                    tz = pytz.timezone(timezone_str)
+                    return datetime.now(tz)
+        except:
+            pass
+        
+        # Fallback to Europe/Berlin timezone
+        import pytz
+        default_tz = pytz.timezone('Europe/Berlin')
+        return datetime.now(default_tz)
     
     
     def setup_config_sheet(self):
@@ -86,8 +108,8 @@ class GsheetsHandler:
         sheet_name = self.get_user_sheet_name(user_id)
         timesheet_wks = self.sh.worksheet_by_title(sheet_name)
         
-        # Use local time directly
-        local_time = datetime.now()
+        # Get timezone from location if available
+        local_time = self._get_local_time(latitude, longitude)
         
         date_str = local_time.strftime('%d/%m/%Y')
         time_str = local_time.strftime('%H:%M:%S')
@@ -113,7 +135,8 @@ class GsheetsHandler:
                     latitude or "",  # Latitude In
                     longitude or "",  # Longitude In
                     current_record.get('Latitude Out', ''),  # Keep existing Latitude Out
-                    current_record.get('Longitude Out', '')   # Keep existing Longitude Out
+                    current_record.get('Longitude Out', ''),   # Keep existing Longitude Out
+                    current_record.get('Description', '')  # Keep existing Description
                 ]
             else:  # clock_out
                 row_data = [
@@ -123,7 +146,8 @@ class GsheetsHandler:
                     current_record.get('Latitude In', ''),   # Keep existing Latitude In
                     current_record.get('Longitude In', ''),  # Keep existing Longitude In
                     latitude or "",  # Latitude Out
-                    longitude or ""  # Longitude Out
+                    longitude or "",  # Longitude Out
+                    current_record.get('Description', '')  # Keep existing Description
                 ]
             timesheet_wks.update_row(existing_row, row_data)
             return existing_row
@@ -137,7 +161,8 @@ class GsheetsHandler:
                     latitude or "",  # Latitude In
                     longitude or "",  # Longitude In
                     "",  # Latitude Out (empty)
-                    ""   # Longitude Out (empty)
+                    "",   # Longitude Out (empty)
+                    ""    # Description (empty)
                 ]
             else:  # clock_out (shouldn't happen without clock_in, but handle it)
                 row_data = [
@@ -147,13 +172,42 @@ class GsheetsHandler:
                     "",  # Latitude In (empty)
                     "",  # Longitude In (empty)
                     latitude or "",  # Latitude Out
-                    longitude or ""  # Longitude Out
+                    longitude or "",  # Longitude Out
+                    ""    # Description (empty)
                 ]
             
             next_row = len(all_records) + 2
             timesheet_wks.update_row(next_row, row_data)
             return next_row
     
+    def update_description(self, user_id, date_str, description):
+        """Update description for a specific date"""
+        sheet_name = self.get_user_sheet_name(user_id)
+        try:
+            timesheet_wks = self.sh.worksheet_by_title(sheet_name)
+            all_records = timesheet_wks.get_all_records()
+            
+            # Find the record for this date
+            for i, record in enumerate(all_records):
+                if record.get('Date') == date_str:
+                    # Update description in the existing record
+                    row_num = i + 2  # +2 because records start from row 2
+                    current_description = record.get('Description', '')
+                    
+                    # Append new description to existing one
+                    if current_description:
+                        new_description = f"{current_description}; {description}"
+                    else:
+                        new_description = description
+                    
+                    # Update just the description column (column H = 8)
+                    timesheet_wks.update_value((row_num, 8), new_description)
+                    return True
+            
+            return False  # Date not found
+            
+        except pygsheets.exceptions.WorksheetNotFound:
+            return False
 
     def get_user_records(self, user_id, limit=10):
         """Get recent time records for a user"""
@@ -336,6 +390,17 @@ class TimeTracker:
     def get_user_config(self, user_id):
         """Get user configuration"""
         return self.gsheets_handler.get_user_config(user_id)
+    
+    def update_description(self, user_id, description):
+        """Update description for today's date"""
+        from datetime import datetime
+        import pytz
+        
+        # Get today's date in the format used in sheets
+        default_tz = pytz.timezone('Europe/Berlin')
+        today = datetime.now(default_tz).strftime('%d/%m/%Y')
+        
+        return self.gsheets_handler.update_description(user_id, today, description)
 
 if __name__ == "__main__":
     gsheet_key="C:/Users/drpoz/OneDrive/Desktop/TelegramShops/Amazon/creds/google_creds.json"
