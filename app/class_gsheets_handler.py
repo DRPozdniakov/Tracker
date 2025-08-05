@@ -4,6 +4,9 @@ import pandas as pd
 import sqlite3
 from datetime import datetime
 
+# Station Status
+
+
 class GsheetsHandler:
     def __init__(self, gsheet_key_path: str, sheet_name: str = 'Launch_Time_Tracker'):
         self.gc = pygsheets.authorize(service_file=gsheet_key_path)
@@ -62,7 +65,7 @@ class GsheetsHandler:
             timesheet_wks = self.sh.add_worksheet(sheet_name)
             
             # Setup headers
-            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out", "Description"]
+            headers = ["Date", "clock_in", "clock_out", "Latitude In", "Longitude In", "Latitude Out", "Longitude Out", "Duration", "Description"]
             timesheet_wks.update_row(1, headers)
     
     def _get_local_time(self, latitude=None, longitude=None):
@@ -86,6 +89,7 @@ class GsheetsHandler:
         import pytz
         default_tz = pytz.timezone('Europe/Berlin')
         return datetime.now(default_tz)
+    
     
     
     def setup_config_sheet(self):
@@ -136,9 +140,10 @@ class GsheetsHandler:
                     longitude or "",  # Longitude In
                     current_record.get('Latitude Out', ''),  # Keep existing Latitude Out
                     current_record.get('Longitude Out', ''),   # Keep existing Longitude Out
+                    current_record.get('Duration', ''),  # Keep existing Duration
                     current_record.get('Description', '')  # Keep existing Description
                 ]
-            else:  # clock_out
+            else:  # clock_out                
                 row_data = [
                     date_str,
                     current_record.get('clock_in', ''),  # Keep existing clock_in
@@ -147,6 +152,7 @@ class GsheetsHandler:
                     current_record.get('Longitude In', ''),  # Keep existing Longitude In
                     latitude or "",  # Latitude Out
                     longitude or "",  # Longitude Out
+                    f"=TEXT(C{existing_row}-B{existing_row},\"[h]:mm:ss\")",  # Duration formula in hours:minutes:seconds format
                     current_record.get('Description', '')  # Keep existing Description
                 ]
             timesheet_wks.update_row(existing_row, row_data)
@@ -162,6 +168,7 @@ class GsheetsHandler:
                     longitude or "",  # Longitude In
                     "",  # Latitude Out (empty)
                     "",   # Longitude Out (empty)
+                    "",   # Duration (empty)
                     ""    # Description (empty)
                 ]
             else:  # clock_out (shouldn't happen without clock_in, but handle it)
@@ -173,6 +180,7 @@ class GsheetsHandler:
                     "",  # Longitude In (empty)
                     latitude or "",  # Latitude Out
                     longitude or "",  # Longitude Out
+                    "",   # Duration (empty)
                     ""    # Description (empty)
                 ]
             
@@ -200,8 +208,8 @@ class GsheetsHandler:
                     else:
                         new_description = description
                     
-                    # Update just the description column (column H = 8)
-                    timesheet_wks.update_value((row_num, 8), new_description)
+                    # Update just the description column (column I = 9, since we added Duration)
+                    timesheet_wks.update_value((row_num, 9), new_description)
                     return True
             
             return False  # Date not found
